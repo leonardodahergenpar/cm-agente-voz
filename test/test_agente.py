@@ -251,3 +251,30 @@ def test_tanto_faz_logo_depois_da_pergunta(monkeypatch):
         est.session.history.items = [Item("assistant", "Como posso ajudar, Doutor?"), Item("user", "Quero remarcar.")]
         assert "Ainda não consulte" in await agente.Assistente(est).horarios_livres(None, "cafe")
     asyncio.run(corre())
+
+
+def test_nome_da_empresa_e_retomada_de_fala_cortada(monkeypatch):
+    s = instrucoes.montar(CTX)
+    assert "NUNCA diga \"Conta Médica\"" in s and "L final bem pronunciado" in instrucoes.abertura(CTX)
+    pedidos = []
+    monkeypatch.setattr(agente, "RETOMAR_S", 0.05)
+    monkeypatch.setattr(agente, "instruir", lambda sess, txt: pedidos.append(txt))
+
+    class Fala:
+        def __init__(self, cortada): self.interrupted = cortada; self.cb = None
+        def add_done_callback(self, cb): self.cb = cb
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), CTX)
+        sess = types.SimpleNamespace(agent_state="listening")
+        r = agente.RetomadaFalsa(est, sess)
+        f = Fala(True); r.ao_criar_fala(types.SimpleNamespace(speech_handle=f)); f.cb(f)     # cortada por ruído
+        r.ao_mudar_usuario(types.SimpleNamespace(old_state="speaking", new_state="listening"))
+        await asyncio.sleep(0.15)
+        assert len(pedidos) == 1 and "Termine" in pedidos[0]
+        f2 = Fala(True); r.ao_criar_fala(types.SimpleNamespace(speech_handle=f2)); f2.cb(f2)  # cortada, mas o médico falou
+        r.ao_transcrever(types.SimpleNamespace(is_final=True, transcript="quero às três"))
+        r.ao_mudar_usuario(types.SimpleNamespace(old_state="speaking", new_state="listening"))
+        await asyncio.sleep(0.15)
+        assert len(pedidos) == 1
+    asyncio.run(corre())

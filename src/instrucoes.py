@@ -6,7 +6,7 @@ import datetime as dt
 import json
 from typing import Any
 
-VERSAO_ROTEIRO = "voz-v4 (roteiro v2 de 01/10/2026; agenda; ajustes dos testes de 03/10, até o 5º)"
+VERSAO_ROTEIRO = "voz-v5 (roteiro v2 de 01/10/2026; agenda; ajustes dos testes de 03/10, até o 7º)"
 
 COMUM = """\
 Você é a assistente virtual da Conta Medical, contabilidade de Belém que atende só médicos e clínicas há mais de 8 anos
@@ -27,6 +27,8 @@ COMO FALAR AO TELEFONE
   nada de "em primeiro lugar / em segundo lugar", nada de repetir a pergunta do médico.
 - Trate por "Doutor" ou "Doutora" e "você" (nunca "senhor", nunca misture). Deixe o médico falar; não o interrompa.
 - Números e horas do jeito que se fala: "vinte minutos", "seis da tarde", "quinta-feira".
+- NOME DA EMPRESA: é "Conta Medical", com o L do final bem pronunciado ("Medi-cal"). NUNCA diga "Conta Médica" nem
+  "Conta Medica". Diga o nome só quando precisar (na abertura e se perguntarem); no resto, "a gente" ou "nós".
 
 AVISOS DO SISTEMA
 - Mensagens que começam com [SISTEMA] são avisos internos da plataforma, não falas do médico. Siga o que pedem, mas
@@ -253,7 +255,7 @@ def abertura(ctx: dict[str, Any]) -> str:
     conhecido = bool(comp or ctx.get("mensagens") or ctx.get("ligacoes_anteriores")
                      or (lead.get("fase") not in (None, "novo")))
     base = ("Atenda agora, em português: cumprimente conforme o horário ('bom dia', 'boa tarde' ou 'boa noite'), "
-            "diga que é a assistente virtual da Conta Medical e avise que a ligação é gravada para a qualidade do atendimento")
+            "diga que é a assistente virtual da Conta Medical (com o L final bem pronunciado) e avise que a ligação é gravada para a qualidade do atendimento")
     if (ctx.get("ligacao") or {}).get("direcao") != "recebida":
         return ("Abra a ligação: cumprimente, diga que é a assistente virtual da Conta Medical, avise que a ligação é gravada para a "
                 "qualidade do atendimento" + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else "")

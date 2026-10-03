@@ -35,7 +35,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.6"
+VERSAO = "0.3.7"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -50,6 +50,12 @@ agora_iso = lambda: dt.datetime.now(dt.timezone.utc).isoformat()  # noqa: E731
 
 Modalidade = Literal["cafe", "video", "retorno"]
 SILENCIO_MS = int(os.environ.get("VOZ_SILENCIO_MS", "500"))   # pausa do médico que encerra a vez dele (menor = responde mais rápido)
+# v0.3.7 (7º teste): a confirmação foi cortada no meio por um ruído do lado do médico ("…no nosso escritório, no") e ela
+# ficou 7 s calada. O padrão do Gemini Live é detectar início de fala com sensibilidade ALTA; agora BAIXA e exige
+# 300 ms de voz antes de considerar que o médico começou a falar. VOZ_INICIO_SENS=HIGH volta ao padrão.
+INICIO_SENS = os.environ.get("VOZ_INICIO_SENS", "LOW").upper()
+PREFIXO_MS = int(os.environ.get("VOZ_PREFIXO_MS", "300"))
+RETOMAR_S = float(os.environ.get("VOZ_RETOMAR_S", "2.5"))   # interrompida sem o médico dizer nada: retoma a frase
 VOCABULARIO = ["Conta Medical", "Onsaúde", "Quadra Corporate", "Doca", "CNPJ", "Priscila", "Emilly", "Eduarda", "Belém",
                "sociedade médica", "remarcar", "presencial"]
 Resultado = Literal["interessado", "agendou", "sem_interesse", "retornar", "duvida_humano", "nao_e_lead"]
@@ -469,6 +475,9 @@ async def entrypoint(ctx: JobContext) -> None:
         output_audio_transcription=gtypes.AudioTranscriptionConfig(),
         # v0.3: fim da vez do médico mais rápido (pausas longas no 2º teste)
         realtime_input_config=gtypes.RealtimeInputConfig(automatic_activity_detection=gtypes.AutomaticActivityDetection(
+            start_of_speech_sensitivity=(gtypes.StartSensitivity.START_SENSITIVITY_HIGH if INICIO_SENS == "HIGH"
+                                         else gtypes.StartSensitivity.START_SENSITIVITY_LOW),
+            prefix_padding_ms=PREFIXO_MS,
             end_of_speech_sensitivity=gtypes.EndSensitivity.END_SENSITIVITY_HIGH, silence_duration_ms=SILENCIO_MS)),
     )
     session = AgentSession(llm=llm, user_away_timeout=20.0)
@@ -530,6 +539,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session.on("user_state_changed", ao_mudar_usuario)
 
+    # v0.3.7: interrupção falsa (ruído) — a fala foi cortada e o médico não disse nada: ela retoma a frase
+    retomada = RetomadaFalsa(est, session)
+    session.on("speech_created", retomada.ao_criar_fala)
+    session.on("user_input_transcribed", retomada.ao_transcrever)
+    session.on("user_state_changed", retomada.ao_mudar_usuario)
+
     # limite de duração
     async def relogio() -> None:
         await asyncio.sleep(max(60.0, (MAX_MIN - 2) * 60))
@@ -540,6 +555,52 @@ async def entrypoint(ctx: JobContext) -> None:
             await desligar(est, "tempo máximo")
 
     asyncio.create_task(relogio())
+
+
+class RetomadaFalsa:
+    """Fala da assistente cortada por ruído (o médico não disse nada): depois de RETOMAR_S, pede que ela termine a frase."""
+
+    def __init__(self, est: Estado, session: Any):
+        self.est, self.session = est, session
+        self.cortada_em: float | None = None
+        self.medico_falou_em = 0.0
+        self.tarefa: asyncio.Task | None = None
+
+    def ao_criar_fala(self, ev: Any) -> None:
+        h = getattr(ev, "speech_handle", None)
+        if h is not None:
+            h.add_done_callback(lambda x: self._fim(x))
+
+    def _fim(self, h: Any) -> None:
+        try:
+            if h.interrupted:
+                self.cortada_em = time.monotonic()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def ao_transcrever(self, ev: Any) -> None:
+        if getattr(ev, "is_final", False) and (getattr(ev, "transcript", "") or "").strip():
+            self.medico_falou_em = time.monotonic()
+
+    def ao_mudar_usuario(self, ev: Any) -> None:
+        if getattr(ev, "new_state", "") == "listening" and getattr(ev, "old_state", "") == "speaking":
+            if self.tarefa and not self.tarefa.done():
+                self.tarefa.cancel()
+            self.tarefa = asyncio.create_task(self.conferir())
+
+    def precisa_retomar(self) -> bool:
+        e = self.est
+        return bool(self.cortada_em and self.medico_falou_em < self.cortada_em and not e.encerrando
+                    and not e.humano_entrou.is_set() and not e.aguardando
+                    and getattr(self.session, "agent_state", "") not in ("speaking", "thinking"))
+
+    async def conferir(self) -> None:
+        await asyncio.sleep(RETOMAR_S)
+        if self.precisa_retomar():
+            self.cortada_em = None
+            log.info("retomando fala cortada por ruído %s", self.est.ligacao_id)
+            instruir(self.session, "Sua última frase foi cortada por um ruído na linha e o médico não disse nada. Termine "
+                                   "agora a frase que estava dizendo, retomando de onde parou, sem pedir desculpas.")
 
 
 async def passar_para_humano(est: Estado) -> None:
