@@ -38,7 +38,12 @@ def test_abertura():
     a = instrucoes.abertura(CTX)
     assert "Doutor(a) Leonardo" in a and "gravada" in a and "assistente virtual" in a
     assert "pergunte com quem fala" in instrucoes.abertura({**CTX, "lead": {"nome": "5591999990000"}})
-    assert "apresente a Conta Medical" in a and "espere a resposta" in a
+    assert "NÃO faça a apresentação" in a                       # CTX tem mensagens e fase "proposta": já nos conhece
+    novo = instrucoes.abertura({**CTX, "mensagens": [], "lead": {"nome": "Ana Souza", "fase": "novo"}})
+    assert "apresente a Conta Medical" in novo and "espere a resposta" in novo
+    comp = [{"modalidade": "video", "texto": "sexta-feira, 9 de outubro, às 18h", "consultora": "Priscila"}]
+    r = instrucoes.abertura({**CTX, "compromissos": comp})
+    assert "videochamada marcada conosco para sexta-feira, 9 de outubro, às 18h, com a Priscila" in r and "NÃO faça a apresentação" in r
 
 class FakeCtx:  # JobContext mínimo
     def __init__(self): self.room = types.SimpleNamespace(name="lig-L1"); self.desligou = False; self.motivo = None

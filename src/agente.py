@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.3"
+VERSAO = "0.3.4"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -391,10 +391,12 @@ async def entrypoint(ctx: JobContext) -> None:
             if noise_cancellation and os.environ.get("VOZ_FILTRO_RUIDO", "1") == "1" else True),
     )
     await banco.atualizar_ligacao(ligacao_id, {"status": "em_andamento", "atendida_em": agora_iso()})
+    # v0.3.4: a gravação começa junto com a abertura (no 4º teste o cumprimento e o aviso ficaram fora do áudio)
+    gravacao = asyncio.create_task(iniciar_gravacao(est))
     fala = instruir(session, instrucoes.abertura(contexto))
     await fala
     await banco.atualizar_ligacao(ligacao_id, {"aviso_gravacao_em": agora_iso()})
-    await iniciar_gravacao(est)
+    await gravacao
 
     # médico em silêncio: pergunta uma vez se ainda está na linha; na segunda, encerra
     ausencias = {"n": 0}
