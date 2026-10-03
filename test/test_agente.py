@@ -157,3 +157,19 @@ def test_encerrar_espera_registro_e_registra_sozinho(monkeypatch):
         await asyncio.sleep(1.2)
         assert est.ctx.desligou
     asyncio.run(corre())
+
+
+def test_reuniao_ja_marcada_remarcar_e_cancelar(monkeypatch):
+    comp = [{"participante_id": "P1", "modalidade": "video", "texto": "sexta-feira, 9 de outubro, às 18h", "consultora": "Priscila"}]
+    s = instrucoes.montar({**CTX, "compromissos": comp})
+    assert "REUNIÃO JÁ MARCADA" in s and "sexta-feira, 9 de outubro, às 18h, vídeo, com a Priscila" in s
+    chamadas = []
+    async def rpc(nome, args): chamadas.append((nome, args)); return {"ok": True}
+    monkeypatch.setattr(banco, "rpc", rpc)
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), {**CTX, "compromissos": list(comp)})
+        r = await agente.Assistente(est).cancelar_reuniao(None, "vai viajar")
+        assert "Cancelada" in r and chamadas[-1] == ("agenda_cancelar", {"p_participante": "P1", "p_motivo": "pedido do médico por ligação: vai viajar"})
+        assert "Não há reunião" in await agente.Assistente(est).cancelar_reuniao(None, "x")
+    asyncio.run(corre())

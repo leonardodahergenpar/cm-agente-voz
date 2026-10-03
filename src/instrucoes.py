@@ -200,6 +200,14 @@ def montar(ctx: dict[str, Any]) -> str:
             partes.append(_linha("Triagem já feita", json.dumps(lead["triagem"], ensure_ascii=False)[:800]))
     else:
         partes.append("- Não há ficha de lead para este número: descubra o nome e o caso com naturalidade.\n")
+    comp = ctx.get("compromissos") or []
+    if comp:
+        partes.append("REUNIÃO JÁ MARCADA (provável motivo da ligação — confirme, remarque ou cancele):\n")
+        for c in comp:
+            mod = {"cafe": "café no escritório", "video": "vídeo", "retorno": "retorno por ligação"}.get(c.get("modalidade"), c.get("modalidade"))
+            partes.append(f"  - {c.get('texto')}, {mod}, com a {c.get('consultora')}\n")
+        partes.append("  Para remarcar: horarios_livres + marcar_reuniao (o horário antigo é liberado sozinho). "
+                      "Para só cancelar: cancelar_reuniao. Não refaça a triagem.\n")
     msgs = ctx.get("mensagens") or []
     if msgs:
         partes.append("Últimas mensagens no WhatsApp (não pergunte de novo o que já foi respondido):\n")

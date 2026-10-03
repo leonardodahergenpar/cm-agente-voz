@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.2"
+VERSAO = "0.3.3"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -189,6 +189,23 @@ class Assistente(Agent):
                  "retorno": "a consultora liga para ele"}[modalidade]
         return (f"Marcado: {r['texto']}, {local}, com a {r['consultora']}. Confirme ao médico dizendo o dia da semana, o dia, o mês "
                 f"e a hora exatamente assim: '{r['texto']}'. Depois use registrar_resultado com resultado 'agendou'.")
+
+    @function_tool
+    async def cancelar_reuniao(self, context: RunContext, motivo: str) -> str:
+        """Cancela a reunião já marcada do médico (listada em REUNIÃO JÁ MARCADA). Só se ele pedir para cancelar
+        sem remarcar; para trocar de horário, use horarios_livres + marcar_reuniao (o horário antigo é liberado sozinho).
+
+        Args:
+            motivo: o motivo, com as palavras do médico.
+        """
+        comp = self.est.contexto.get("compromissos") or []
+        if not comp:
+            return "Não há reunião marcada para este médico."
+        for c in comp:
+            await banco.rpc("agenda_cancelar", {"p_participante": c["participante_id"], "p_motivo": f"pedido do médico por ligação: {motivo}"})
+        self.est.contexto["compromissos"] = []
+        return (f"Cancelada: {comp[0]['texto']}. Confirme ao médico, pergunte se quer deixar um retorno marcado e registre o "
+                f"resultado ('retornar' ou 'sem_interesse').")
 
     @function_tool
     async def encerrar_ligacao(self, context: RunContext) -> str:
