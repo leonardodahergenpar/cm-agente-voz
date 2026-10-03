@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.2.0"
+VERSAO = "0.3.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -47,6 +47,8 @@ PRECO_SAIDA_MIN = float(os.environ.get("VOZ_PRECO_SAIDA_USD_MIN", "0.018"))
 log = logging.getLogger("cm-voz")
 agora_iso = lambda: dt.datetime.now(dt.timezone.utc).isoformat()  # noqa: E731
 
+Modalidade = Literal["cafe", "video", "retorno"]
+SILENCIO_MS = int(os.environ.get("VOZ_SILENCIO_MS", "500"))   # pausa do médico que encerra a vez dele (menor = responde mais rápido)
 Resultado = Literal["interessado", "agendou", "sem_interesse", "retornar", "duvida_humano", "nao_e_lead"]
 Caminho = Literal["compartilhada", "individual", "migracao", "indefinido"]
 
@@ -66,6 +68,7 @@ class Estado:
         self.inicio = time.monotonic()
         self.encerrando = False
         self.aguardando = False   # esperando a consultora entrar (não pergunta "ainda está na linha?" nesse tempo)
+        self.marcado: dict[str, Any] | None = None
 
 
 class Assistente(Agent):
@@ -134,6 +137,60 @@ class Assistente(Agent):
                 f"Enquanto ninguém entra, continue ajudando no que puder. Se em {ESPERA_HUMANO_S} segundos ninguém entrar, eu aviso.")
 
     @function_tool
+    async def horarios_livres(self, context: RunContext, modalidade: Modalidade, preferencia: str | None = None,
+                              so_no_dia: bool = False) -> str:
+        """Consulta a agenda das consultoras. Use SEMPRE antes de propor ou aceitar um horário.
+
+        Args:
+            modalidade: cafe (presencial no escritório, Belém), video (Google Meet) ou retorno (a consultora liga para ele).
+            preferencia: dia e hora que o médico pediu, ISO 8601 com fuso -03:00 (ex.: 2026-10-08T18:00:00-03:00).
+                Se ele só disse o dia, use 09:00 desse dia. Sem preferência, deixe vazio (vêm os próximos horários livres).
+            so_no_dia: true para listar só horários do mesmo dia da preferência.
+        """
+        tenant = (self.est.contexto.get("ligacao") or {}).get("tenant_id")
+        quando = None
+        if preferencia:
+            try:
+                quando = dt.datetime.fromisoformat(preferencia).isoformat()
+            except ValueError:
+                return "Preferência inválida: use ISO 8601 com fuso, ex.: 2026-10-08T18:00:00-03:00."
+        opc = await banco.rpc("agenda_livres", {"p_tenant": tenant, "p_modalidade": modalidade, "p_preferido": quando,
+                                                "p_qtd": 4, "p_so_no_dia": so_no_dia}) or []
+        if not opc:
+            return "Não há horário livre nos próximos dias para essa modalidade. Ofereça outra modalidade ou um retorno."
+        linhas = []
+        for o in opc:
+            exato = bool(quando) and o["inicio"][:16] == dt.datetime.fromisoformat(quando).astimezone(dt.timezone.utc).isoformat()[:16]
+            linhas.append(f"- {o['texto']} (inicio={o['inicio']}{'; É O HORÁRIO PEDIDO' if exato else ''})")
+        aviso = ("" if not quando or "É O HORÁRIO PEDIDO" in linhas[0] else
+                 "O horário pedido NÃO está livre. Diga isso em meia frase e ofereça as duas primeiras opções abaixo.\n")
+        return aviso + "Horários livres (fale exatamente como no texto; para marcar, passe o inicio):\n" + "\n".join(linhas)
+
+    @function_tool
+    async def marcar_reuniao(self, context: RunContext, modalidade: Modalidade, inicio: str) -> str:
+        """Marca o compromisso na agenda, num horário devolvido por horarios_livres e aceito pelo médico.
+
+        Args:
+            modalidade: cafe, video ou retorno.
+            inicio: o valor "inicio" exatamente como veio de horarios_livres.
+        """
+        lead = (self.est.contexto.get("lead") or {}).get("id")
+        if not lead:
+            return "Este número não tem ficha de lead: não marque; use chamar_humano ou registre 'retornar'."
+        tenant = (self.est.contexto.get("ligacao") or {}).get("tenant_id")
+        r = await banco.rpc("agenda_marcar", {"p_tenant": tenant, "p_lead": lead, "p_modalidade": modalidade,
+                                              "p_inicio": inicio, "p_origem": "agente", "p_ligacao_id": self.est.ligacao_id}) or {}
+        if not r.get("ok"):
+            alt = "; ".join(f"{a['texto']} (inicio={a['inicio']})" for a in (r.get("alternativas") or [])[:3])
+            return f"Esse horário acabou de ser ocupado. Ofereça: {alt or 'outro dia'}."
+        self.est.marcado = r
+        local = {"cafe": f"café no escritório ({r.get('endereco') or 'Quadra Corporate, na Doca'})",
+                 "video": "videochamada pelo Google Meet (o link vai pelo WhatsApp)",
+                 "retorno": "a consultora liga para ele"}[modalidade]
+        return (f"Marcado: {r['texto']}, {local}, com a {r['consultora']}. Confirme ao médico dizendo o dia da semana, o dia, o mês "
+                f"e a hora exatamente assim: '{r['texto']}'. Depois use registrar_resultado com resultado 'agendou'.")
+
+    @function_tool
     async def encerrar_ligacao(self, context: RunContext) -> str:
         """Desliga a ligação. Use só depois de registrar o resultado e de se despedir."""
         if not self.est.registrado:
@@ -187,7 +244,7 @@ async def desligar(est: Estado, motivo: str) -> None:
 async def iniciar_gravacao(est: Estado) -> None:
     """Grava o áudio da sala no Storage do Supabase (S3), se configurado."""
     chave, segredo, ponto = os.environ.get("S3_ACCESS_KEY"), os.environ.get("S3_SECRET_KEY"), os.environ.get("S3_ENDPOINT")
-    if not (chave and segredo and ponto):
+    if not (chave and segredo and ponto) or "COLE_AQUI" in (chave, segredo, os.environ.get("S3_REGION", "")):
         return
     t = dt.datetime.now(dt.timezone(dt.timedelta(hours=-3)))
     caminho = f"{est.contexto['ligacao']['tenant_id']}/{t:%Y}/{t:%m}/{est.ligacao_id}.ogg"
@@ -252,6 +309,9 @@ async def entrypoint(ctx: JobContext) -> None:
         model=MODELO, voice=VOZ, language="pt-BR", temperature=0.6,
         input_audio_transcription=gtypes.AudioTranscriptionConfig(),
         output_audio_transcription=gtypes.AudioTranscriptionConfig(),
+        # v0.3: fim da vez do médico mais rápido (pausas longas no 2º teste)
+        realtime_input_config=gtypes.RealtimeInputConfig(automatic_activity_detection=gtypes.AutomaticActivityDetection(
+            end_of_speech_sensitivity=gtypes.EndSensitivity.END_SENSITIVITY_HIGH, silence_duration_ms=SILENCIO_MS)),
     )
     session = AgentSession(llm=llm, user_away_timeout=20.0)
     est.session = session

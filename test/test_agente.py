@@ -104,3 +104,38 @@ def test_instruir_vai_como_aviso_do_sistema():
         def generate_reply(self, **kw): self.kw = kw; return "h"
     s = S(); agente.instruir(s, "Pergunte se ele ainda está na linha.")
     assert "instructions" not in s.kw and s.kw["user_input"].startswith("[SISTEMA]") and "não leia" in s.kw["user_input"]
+
+
+def test_calendario_e_agenda_nas_instrucoes():
+    import datetime as dt
+    c = instrucoes.calendario(dt.date(2026, 10, 3), 7)
+    assert "sábado 03/10/2026 (2026-10-03)" in c and "quinta-feira 08/10/2026 (2026-10-08)" in c
+    s = instrucoes.montar(CTX)
+    assert "horarios_livres" in s and "marcar_reuniao" in s and "dia da semana, o dia, o mês e a hora" in s
+
+
+def test_ferramentas_de_agenda(monkeypatch):
+    chamadas = []
+    async def rpc(nome, args):
+        chamadas.append((nome, args))
+        if nome == "agenda_livres":
+            return [{"inicio": "2026-10-08T20:30:00+00:00", "texto": "quinta-feira, 8 de outubro, às 17h30"},
+                    {"inicio": "2026-10-08T21:30:00+00:00", "texto": "quinta-feira, 8 de outubro, às 18h30"}]
+        if nome == "agenda_marcar":
+            return {"ok": True, "texto": "quinta-feira, 8 de outubro, às 17h30", "consultora": "Priscila"}
+    monkeypatch.setattr(banco, "rpc", rpc)
+    ctx = {**CTX, "ligacao": {**CTX["ligacao"], "tenant_id": "T"}}
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), ctx)
+        ag = agente.Assistente(est)
+        r = await ag.horarios_livres(None, "video", "2026-10-08T18:00:00-03:00", True)
+        assert "NÃO está livre" in r and "17h30" in r and chamadas[-1][1]["p_so_no_dia"] is True
+        r = await ag.horarios_livres(None, "video", "2026-10-08T17:30:00-03:00")
+        assert "É O HORÁRIO PEDIDO" in r and "NÃO está livre" not in r
+        r = await ag.marcar_reuniao(None, "video", "2026-10-08T20:30:00+00:00")
+        assert "quinta-feira, 8 de outubro, às 17h30" in r and "Priscila" in r and est.marcado
+        assert chamadas[-1][1]["p_lead"] == "LD" and chamadas[-1][1]["p_ligacao_id"] == "L1"
+        est2 = agente.Estado("L2", FakeCtx(), {**ctx, "lead": None})
+        assert "não tem ficha" in await agente.Assistente(est2).marcar_reuniao(None, "video", "x")
+    asyncio.run(corre())
