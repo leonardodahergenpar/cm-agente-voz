@@ -1,0 +1,37 @@
+# Agente de voz da Conta Medical — Hostinger Docker Manager → novo projeto "cm-agente-voz" → Compose Manually.
+# Imagem publicada pelo GitHub Actions deste repositório (igual ao conector).
+# Preencher SÓ as 4 linhas marcadas com COLE_AQUI (direto aqui no Docker Manager; nunca pelo chat):
+#   LIVEKIT_API_KEY / LIVEKIT_API_SECRET → a chave criada no LiveKit Cloud (as mesmas dos secrets do Supabase)
+#   GOOGLE_API_KEY       → chave do Gemini (Google AI Studio); pode ser a mesma do GEMINI_API_KEY do Supabase
+#   SUPABASE_SERVICE_KEY → a mesma service key usada no conector
+# Não precisa de porta aberta: o agente só faz conexões de saída (LiveKit Cloud, Gemini e Supabase).
+services:
+  agente:
+    image: ghcr.io/leonardodahergenpar/cm-agente-voz:latest
+    container_name: cm-agente-voz
+    restart: unless-stopped
+    environment:
+      LIVEKIT_URL: wss://cm-comercial-dgkynimo.livekit.cloud
+      LIVEKIT_API_KEY: COLE_AQUI
+      LIVEKIT_API_SECRET: COLE_AQUI
+      GOOGLE_API_KEY: COLE_AQUI
+      SUPABASE_URL: https://cjxyywgzjbeeaaehjxtv.supabase.co
+      SUPABASE_SERVICE_KEY: COLE_AQUI
+      VOZ_AGENTE_NOME: cm-voz
+      VOZ_AGENTE_ID: cm-agente-voz-hostinger
+      # modelo e voz do Gemini Live (trocar aqui para testar outra voz: Aoede, Kore, Leda, Zephyr, Charon, Puck…)
+      GEMINI_LIVE_MODEL: gemini-3.1-flash-live-preview
+      GEMINI_VOZ: Aoede
+      VOZ_ESPERA_HUMANO_S: "45"
+      VOZ_MAX_MIN: "15"
+      # gravação do áudio no Storage do Supabase (bucket crm-ligacoes) — deixar vazio até criar a chave S3
+      S3_ENDPOINT: ""
+      S3_REGION: ""
+      S3_ACCESS_KEY: ""
+      S3_SECRET_KEY: ""
+      S3_BUCKET: crm-ligacoes
+      TZ: America/Belem
+    deploy:
+      resources:
+        limits:
+          memory: 2g
