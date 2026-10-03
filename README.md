@@ -44,7 +44,7 @@ python -m pytest -q test/
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | projeto `cm-comercial` no LiveKit Cloud |
 | `GOOGLE_API_KEY` | chave do Gemini (Google AI Studio) |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | banco da plataforma |
-| `GEMINI_LIVE_MODEL`, `GEMINI_VOZ` | modelo e voz; padrão `gemini-3.1-flash-live-preview` com a voz `Aoede` |
+| `GEMINI_LIVE_MODEL`, `GEMINI_VOZ` | modelo e voz; padrão `gemini-3.8-live` (GA desde 15/09/2026) com a voz `Aoede`; `gemini-3.8-live-extended-thinking` para teste A/B |
 | `VOZ_ESPERA_HUMANO_S` | quanto tempo esperar a consultora entrar (padrão 45) |
 | `VOZ_MAX_MIN` | duração máxima da ligação (padrão 15) |
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET` | gravação no Storage do Supabase (opcional) |

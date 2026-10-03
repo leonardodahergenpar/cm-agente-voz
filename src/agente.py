@@ -31,7 +31,7 @@ import instrucoes
 
 VERSAO = "0.1.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
-MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
+MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
 ESPERA_HUMANO_S = int(os.environ.get("VOZ_ESPERA_HUMANO_S", "45"))
 MAX_MIN = float(os.environ.get("VOZ_MAX_MIN", "15"))

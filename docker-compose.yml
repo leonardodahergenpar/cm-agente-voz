@@ -20,7 +20,7 @@ services:
       VOZ_AGENTE_NOME: cm-voz
       VOZ_AGENTE_ID: cm-agente-voz-hostinger
       # modelo e voz do Gemini Live (trocar aqui para testar outra voz: Aoede, Kore, Leda, Zephyr, Charon, Puck…)
-      GEMINI_LIVE_MODEL: gemini-3.1-flash-live-preview
+      GEMINI_LIVE_MODEL: gemini-3.8-live
       GEMINI_VOZ: Aoede
       VOZ_ESPERA_HUMANO_S: "45"
       VOZ_MAX_MIN: "15"
