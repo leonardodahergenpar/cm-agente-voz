@@ -3,7 +3,7 @@
 # Preencher SÓ as 4 linhas marcadas com COLE_AQUI (direto aqui no Docker Manager; nunca pelo chat):
 #   LIVEKIT_API_KEY / LIVEKIT_API_SECRET → a chave criada no LiveKit Cloud (as mesmas dos secrets do Supabase)
 #   GOOGLE_API_KEY       → chave do Gemini (Google AI Studio); pode ser a mesma do GEMINI_API_KEY do Supabase
-#   SUPABASE_SERVICE_KEY → a mesma service key usada no conector
+#   SUPABASE_SERVICE_KEY → a mesma chave secreta do conector (começa com sb_secret_; a antiga eyJ… está desativada)
 # Não precisa de porta aberta: o agente só faz conexões de saída (LiveKit Cloud, Gemini e Supabase).
 services:
   agente:

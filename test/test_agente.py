@@ -80,3 +80,10 @@ def test_transcricao():
     s = types.SimpleNamespace(history=h)
     t = agente.transcricao(s, "Eduarda")
     assert [x["quem"] for x in t] == ["agente", "medico", "sistema"] and "Eduarda" in t[-1]["texto"]
+
+def test_cabecalho_chave_nova_e_antiga(monkeypatch):
+    monkeypatch.setattr(banco, "CHAVE", "sb_secret_abc")
+    h = banco._cab()
+    assert h["apikey"] == "sb_secret_abc" and "Authorization" not in h and h["Content-Profile"] == "crm"
+    monkeypatch.setattr(banco, "CHAVE", "eyJhbGciOi.x.y")
+    assert banco._cab()["Authorization"] == "Bearer eyJhbGciOi.x.y"
