@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.4"
+VERSAO = "0.3.5"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -49,6 +49,8 @@ agora_iso = lambda: dt.datetime.now(dt.timezone.utc).isoformat()  # noqa: E731
 
 Modalidade = Literal["cafe", "video", "retorno"]
 SILENCIO_MS = int(os.environ.get("VOZ_SILENCIO_MS", "500"))   # pausa do médico que encerra a vez dele (menor = responde mais rápido)
+VOCABULARIO = ["Conta Medical", "Onsaúde", "Quadra Corporate", "Doca", "CNPJ", "Priscila", "Emilly", "Eduarda", "Belém",
+               "sociedade médica", "remarcar", "presencial"]
 Resultado = Literal["interessado", "agendou", "sem_interesse", "retornar", "duvida_humano", "nao_e_lead"]
 Caminho = Literal["compartilhada", "individual", "migracao", "indefinido"]
 
@@ -138,14 +140,16 @@ class Assistente(Agent):
 
     @function_tool
     async def horarios_livres(self, context: RunContext, modalidade: Modalidade, preferencia: str | None = None,
-                              so_no_dia: bool = False) -> str:
-        """Consulta a agenda das consultoras. Use SEMPRE antes de propor ou aceitar um horário.
+                              so_no_dia: bool = False, sem_preferencia: bool = False) -> str:
+        """Consulta a agenda das consultoras. Use SEMPRE antes de propor ou aceitar um horário, e só depois de perguntar
+        ao médico qual dia e horário ficam melhores para ele.
 
         Args:
             modalidade: cafe (presencial no escritório, Belém), video (Google Meet) ou retorno (a consultora liga para ele).
             preferencia: dia e hora que o médico pediu, ISO 8601 com fuso -03:00 (ex.: 2026-10-08T18:00:00-03:00).
-                Se ele só disse o dia, use 09:00 desse dia. Sem preferência, deixe vazio (vêm os próximos horários livres).
+                Se ele só disse o dia, use 09:00 desse dia; se disse "à tarde", 15:00.
             so_no_dia: true para listar só horários do mesmo dia da preferência.
+            sem_preferencia: true SÓ se o médico disse que tanto faz / pediu sugestão (aí vêm 3 opções em dias e turnos diferentes).
         """
         tenant = (self.est.contexto.get("ligacao") or {}).get("tenant_id")
         quando = None
@@ -154,17 +158,32 @@ class Assistente(Agent):
                 quando = dt.datetime.fromisoformat(preferencia).isoformat()
             except ValueError:
                 return "Preferência inválida: use ISO 8601 com fuso, ex.: 2026-10-08T18:00:00-03:00."
+        elif not sem_preferencia:
+            # v0.3.5 (5º teste): sem perguntar, ela lia os 4 primeiros horários da semana — o médico ouvia opções que não queria
+            return ("Ainda não consulte. Pergunte ao médico, numa frase, qual dia e horário ficam melhores para ele e consulte com a "
+                    "resposta. Só se ele disser que tanto faz, consulte de novo com sem_preferencia=true.")
         opc = await banco.rpc("agenda_livres", {"p_tenant": tenant, "p_modalidade": modalidade, "p_preferido": quando,
-                                                "p_qtd": 4, "p_so_no_dia": so_no_dia}) or []
+                                                "p_qtd": 4 if quando else 40, "p_so_no_dia": so_no_dia}) or []
         if not opc:
             return "Não há horário livre nos próximos dias para essa modalidade. Ofereça outra modalidade ou um retorno."
+        if not quando:
+            opc = espalhar(opc, 3)
         linhas = []
-        for o in opc:
-            exato = bool(quando) and o["inicio"][:16] == dt.datetime.fromisoformat(quando).astimezone(dt.timezone.utc).isoformat()[:16]
-            linhas.append(f"- {o['texto']} (inicio={o['inicio']}{'; É O HORÁRIO PEDIDO' if exato else ''})")
-        aviso = ("" if not quando or "É O HORÁRIO PEDIDO" in linhas[0] else
-                 "O horário pedido NÃO está livre. Diga isso em meia frase e ofereça as duas primeiras opções abaixo.\n")
-        return aviso + "Horários livres (fale exatamente como no texto; para marcar, passe o inicio):\n" + "\n".join(linhas)
+        exato = False
+        for i, o in enumerate(opc):
+            e = bool(quando) and o["inicio"][:16] == dt.datetime.fromisoformat(quando).astimezone(dt.timezone.utc).isoformat()[:16]
+            exato = exato or (e and i == 0)
+            linhas.append(f"- {o['texto']} (inicio={o['inicio']}{'; É O HORÁRIO PEDIDO' if e else ''})")
+        if exato:
+            # v0.3.5: ela dizia "Perfeito! quarta às 17h30…" e, depois de marcar, "Fechado: quarta às 17h30…" (confirmação dupla)
+            return (f"O horário pedido está livre (inicio={opc[0]['inicio']}). O médico já escolheu: chame marcar_reuniao agora, sem "
+                    "confirmar antes. Enquanto isso, no máximo 'Tenho sim, só um instante.' A confirmação é uma só, depois que "
+                    "marcar_reuniao responder.")
+        aviso = ("" if not quando else
+                 "O horário pedido NÃO está livre. Diga isso em meia frase e ofereça as duas opções mais próximas abaixo.\n")
+        if not quando:
+            aviso = "Sugira estas opções (dias e turnos diferentes), numa frase, e pergunte qual fica melhor.\n"
+        return aviso + "Horários livres (fale como no texto; não repita a modalidade; para marcar, passe o inicio):\n" + "\n".join(linhas)
 
     @function_tool
     async def marcar_reuniao(self, context: RunContext, modalidade: Modalidade, inicio: str) -> str:
@@ -184,11 +203,11 @@ class Assistente(Agent):
             alt = "; ".join(f"{a['texto']} (inicio={a['inicio']})" for a in (r.get("alternativas") or [])[:3])
             return f"Esse horário acabou de ser ocupado. Ofereça: {alt or 'outro dia'}."
         self.est.marcado = r
-        local = {"cafe": f"café no escritório ({r.get('endereco') or 'Quadra Corporate, na Doca'})",
-                 "video": "videochamada pelo Google Meet (o link vai pelo WhatsApp)",
-                 "retorno": "a consultora liga para ele"}[modalidade]
-        return (f"Marcado: {r['texto']}, {local}, com a {r['consultora']}. Confirme ao médico dizendo o dia da semana, o dia, o mês "
-                f"e a hora exatamente assim: '{r['texto']}'. Depois use registrar_resultado com resultado 'agendou'.")
+        antes = ((self.est.contexto.get("compromissos") or [{}])[0] or {}).get("consultora")
+        troca = (f" A consultora mudou (antes era a {antes}): diga só 'quem vai te receber é a {r['consultora']}', sem explicar a troca."
+                 if antes and antes != r.get("consultora") else "")
+        return (f"Marcado. Confirme UMA vez só, numa frase, exatamente assim: '{frase_confirmacao(r, modalidade)}'.{troca} Não repita "
+                "a confirmação depois. Em seguida use registrar_resultado (agendou), despeça-se numa frase curta e use encerrar_ligacao.")
 
     @function_tool
     async def cancelar_reuniao(self, context: RunContext, motivo: str) -> str:
@@ -222,6 +241,41 @@ class Assistente(Agent):
             return "Antes de encerrar, use registrar_resultado."
         asyncio.create_task(desligar(self.est, "agente encerrou"))
         return "Ligação será encerrada."
+
+
+def frase_confirmacao(r: dict[str, Any], modalidade: str) -> str:
+    """Frase única de confirmação. v0.3.5: "café" aparece só ao oferecer; marcado, vira reunião aqui no escritório
+    (no 5º teste ela repetiu "café no escritório" três vezes e disse "por café no escritório")."""
+    texto, quem = r.get("texto", ""), r.get("consultora", "a consultora")
+    if modalidade == "cafe":
+        local = r.get("endereco") or "Quadra Corporate, na Doca"
+        return f"Fechado: {texto}, aqui no nosso escritório, no {local}, com a {quem}."
+    if modalidade == "video":
+        return f"Fechado: {texto}, por vídeo, com a {quem}. O link chega pelo WhatsApp."
+    return f"Fechado: {texto}, a {quem} liga para você."
+
+
+def espalhar(opcoes: list[dict[str, Any]], n: int = 3) -> list[dict[str, Any]]:
+    """Sem preferência do médico: em vez dos n primeiros horários (todos na mesma manhã), escolhe dias e turnos diferentes."""
+    def chave(o: dict[str, Any]) -> tuple[str, str]:
+        t = dt.datetime.fromisoformat(o["inicio"]).astimezone(dt.timezone(dt.timedelta(hours=-3)))
+        return t.date().isoformat(), ("manha" if t.hour < 12 else "tarde")
+    escolhidas: list[dict[str, Any]] = []
+    for filtro in ("dia_e_turno", "dia", "qualquer"):
+        for o in opcoes:
+            if len(escolhidas) >= n:
+                break
+            if o in escolhidas:
+                continue
+            d, turno = chave(o)
+            dias = {chave(e)[0] for e in escolhidas}
+            ultimo_turno = chave(escolhidas[-1])[1] if escolhidas else None
+            if filtro == "dia_e_turno" and (d in dias or turno == ultimo_turno):
+                continue
+            if filtro == "dia" and d in dias:
+                continue
+            escolhidas.append(o)
+    return sorted(escolhidas, key=lambda o: o["inicio"])
 
 
 async def registrar_automatico(est: "Estado") -> None:
@@ -262,13 +316,41 @@ async def esperar_humano(est: Estado) -> None:
                                   "desculpas pela espera e pergunte o melhor dia e horário para a consultora retornar.")
 
 
+async def esperar_silencio(session: AgentSession | None, quieto_s: float = 1.5, maximo_s: float = 15.0) -> None:
+    """Espera a assistente terminar de falar (e ficar 1,5 s quieta) antes de desligar.
+
+    v0.3.5 (5º teste): a despedida foi cortada no meio ("desejo uma ex…"). Com as ferramentas em paralelo do Gemini 3.8,
+    o encerrar_ligacao chega enquanto a despedida ainda está sendo gerada: não havia fala corrente para esperar.
+    """
+    if not session:
+        return
+    fim = time.monotonic() + maximo_s
+    quieto_desde: float | None = None
+    while time.monotonic() < fim:
+        sp = session.current_speech
+        ocupada = (sp is not None and not sp.done()) or getattr(session, "agent_state", "") in ("speaking", "thinking")
+        if ocupada:
+            quieto_desde = None
+            if sp is not None and not sp.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(sp.wait_for_playout()), timeout=max(0.1, fim - time.monotonic()))
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                await asyncio.sleep(0.2)
+            continue
+        quieto_desde = quieto_desde or time.monotonic()
+        if time.monotonic() - quieto_desde >= quieto_s:
+            return
+        await asyncio.sleep(0.2)
+
+
 async def desligar(est: Estado, motivo: str) -> None:
     if est.encerrando:
         return
     est.encerrando = True
     try:
-        if est.session and est.session.current_speech:
-            await asyncio.wait_for(asyncio.shield(est.session.current_speech.wait_for_playout()), timeout=15)
+        await esperar_silencio(est.session)
         await asyncio.sleep(0.8)
     except Exception:  # noqa: BLE001
         pass
@@ -349,7 +431,9 @@ async def entrypoint(ctx: JobContext) -> None:
 
     llm = google.realtime.RealtimeModel(
         model=MODELO, voice=VOZ, language="pt-BR", temperature=0.6,
-        input_audio_transcription=gtypes.AudioTranscriptionConfig(),
+        # v0.3.5: a transcrição do médico saiu em espanhol ("¿Qué tal una propia cuarta 17:30?"); dica de idioma e vocabulário
+        input_audio_transcription=gtypes.AudioTranscriptionConfig(language_codes=["pt-BR"], custom_vocabulary=VOCABULARIO)
+        if os.environ.get("VOZ_TRANSCRICAO_PT", "1") == "1" else gtypes.AudioTranscriptionConfig(),
         output_audio_transcription=gtypes.AudioTranscriptionConfig(),
         # v0.3: fim da vez do médico mais rápido (pausas longas no 2º teste)
         realtime_input_config=gtypes.RealtimeInputConfig(automatic_activity_detection=gtypes.AutomaticActivityDetection(

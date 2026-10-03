@@ -116,7 +116,8 @@ def test_calendario_e_agenda_nas_instrucoes():
     c = instrucoes.calendario(dt.date(2026, 10, 3), 7)
     assert "sábado 03/10/2026 (2026-10-03)" in c and "quinta-feira 08/10/2026 (2026-10-08)" in c
     s = instrucoes.montar(CTX)
-    assert "horarios_livres" in s and "marcar_reuniao" in s and "dia da semana, o dia, o mês e a hora" in s
+    assert "horarios_livres" in s and "marcar_reuniao" in s and "dia da semana, dia, mês, hora" in s
+    assert "Não sugira horário antes" in s and "no máximo UMA vez" in s and "NÃO repita o combinado" in s
 
 
 def test_ferramentas_de_agenda(monkeypatch):
@@ -137,9 +138,15 @@ def test_ferramentas_de_agenda(monkeypatch):
         r = await ag.horarios_livres(None, "video", "2026-10-08T18:00:00-03:00", True)
         assert "NÃO está livre" in r and "17h30" in r and chamadas[-1][1]["p_so_no_dia"] is True
         r = await ag.horarios_livres(None, "video", "2026-10-08T17:30:00-03:00")
-        assert "É O HORÁRIO PEDIDO" in r and "NÃO está livre" not in r
+        assert "está livre (inicio=2026-10-08T20:30:00+00:00)" in r and "chame marcar_reuniao agora" in r and "NÃO está livre" not in r
+        n = len(chamadas)
+        r = await ag.horarios_livres(None, "video")            # sem perguntar ao médico: não consulta
+        assert "Ainda não consulte" in r and len(chamadas) == n
+        r = await ag.horarios_livres(None, "video", sem_preferencia=True)
+        assert "Sugira estas opções" in r and chamadas[-1][1]["p_qtd"] == 40
         r = await ag.marcar_reuniao(None, "video", "2026-10-08T20:30:00+00:00")
-        assert "quinta-feira, 8 de outubro, às 17h30" in r and "Priscila" in r and est.marcado
+        assert "Fechado: quinta-feira, 8 de outubro, às 17h30, por vídeo, com a Priscila" in r and "UMA vez" in r and est.marcado
+        assert "mudou" not in r
         assert chamadas[-1][1]["p_lead"] == "LD" and chamadas[-1][1]["p_ligacao_id"] == "L1"
         est2 = agente.Estado("L2", FakeCtx(), {**ctx, "lead": None})
         assert "não tem ficha" in await agente.Assistente(est2).marcar_reuniao(None, "video", "x")
@@ -177,4 +184,41 @@ def test_reuniao_ja_marcada_remarcar_e_cancelar(monkeypatch):
         r = await agente.Assistente(est).cancelar_reuniao(None, "vai viajar")
         assert "Cancelada" in r and chamadas[-1] == ("agenda_cancelar", {"p_participante": "P1", "p_motivo": "pedido do médico por ligação: vai viajar"})
         assert "Não há reunião" in await agente.Assistente(est).cancelar_reuniao(None, "x")
+    asyncio.run(corre())
+
+
+def test_confirmacao_e_espalhar():
+    r = {"texto": "quarta-feira, 7 de outubro, às 17h30", "consultora": "Emilly", "endereco": "Quadra Corporate, na Doca"}
+    f = agente.frase_confirmacao(r, "cafe")
+    assert f == "Fechado: quarta-feira, 7 de outubro, às 17h30, aqui no nosso escritório, no Quadra Corporate, na Doca, com a Emilly."
+    assert "café" not in f and " por " not in f
+    opc = [{"inicio": f"2026-10-05T{h:02d}:{m:02d}:00+00:00"} for h in range(11, 22) for m in (0, 30)]       # segunda 8h–18h30
+    opc += [{"inicio": f"2026-10-06T{h:02d}:00:00+00:00"} for h in range(11, 22)]                            # terça
+    opc += [{"inicio": "2026-10-07T12:00:00+00:00"}]                                                          # quarta 9h
+    e = agente.espalhar(opc, 3)
+    assert [o["inicio"] for o in e] == ["2026-10-05T11:00:00+00:00", "2026-10-06T15:00:00+00:00", "2026-10-07T12:00:00+00:00"]
+    assert len(agente.espalhar(opc[:2], 3)) == 2
+
+
+def test_troca_de_consultora_e_espera_do_silencio(monkeypatch):
+    async def rpc(nome, args): return {"ok": True, "texto": "quarta-feira, 7 de outubro, às 17h30", "consultora": "Emilly", "modalidade": "cafe"}
+    monkeypatch.setattr(banco, "rpc", rpc)
+    comp = [{"participante_id": "P1", "modalidade": "video", "texto": "quarta-feira, 7 de outubro, às 17h", "consultora": "Priscila"}]
+
+    class Fala:
+        def __init__(self): self.ok = False
+        def done(self): return self.ok
+        async def wait_for_playout(self): await asyncio.sleep(0.3); self.ok = True
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), {**CTX, "compromissos": comp})
+        r = await agente.Assistente(est).marcar_reuniao(None, "cafe", "2026-10-07T20:30:00+00:00")
+        assert "quem vai te receber é a Emilly" in r
+        fala = Fala()
+        sess = types.SimpleNamespace(current_speech=fala, agent_state="speaking")
+        t0 = asyncio.get_event_loop().time()
+        async def para_de_falar(): await asyncio.sleep(0.3); sess.agent_state = "listening"
+        asyncio.create_task(para_de_falar())
+        await agente.esperar_silencio(sess, quieto_s=0.3, maximo_s=3)
+        assert fala.ok and asyncio.get_event_loop().time() - t0 >= 0.6
     asyncio.run(corre())
