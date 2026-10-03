@@ -11,13 +11,10 @@ CHAVE = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 
 def _cab(perfil: str = "crm") -> dict[str, str]:
-    return {
-        "apikey": CHAVE,
-        "Authorization": f"Bearer {CHAVE}",
-        "Content-Type": "application/json",
-        "Content-Profile": perfil,
-        "Accept-Profile": perfil,
-    }
+    h = {"apikey": CHAVE, "Content-Type": "application/json", "Content-Profile": perfil, "Accept-Profile": perfil}
+    if CHAVE.startswith("eyJ"):          # chave antiga (JWT) vai também no Authorization;
+        h["Authorization"] = f"Bearer {CHAVE}"   # a nova (sb_secret_…) só no apikey (mesmo padrão do cm-ctb-leitura)
+    return h
 
 
 class ErroBanco(RuntimeError):
