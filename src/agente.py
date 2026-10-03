@@ -24,6 +24,7 @@ from typing import Any, Literal
 from google.genai import types as gtypes
 from livekit import api, rtc
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, cli, function_tool, room_io
+from livekit.agents.llm import StopResponse
 from livekit.plugins import google
 
 try:  # supressão de ruído da LiveKit Cloud (modelo para áudio de telefone); sem ela, segue sem filtro
@@ -34,7 +35,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.5"
+VERSAO = "0.3.6"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -71,6 +72,12 @@ class Estado:
         self.encerrando = False
         self.aguardando = False   # esperando a consultora entrar (não pergunta "ainda está na linha?" nesse tempo)
         self.marcado: dict[str, Any] | None = None
+        self.encerrar_pedido = False      # v0.3.6: encerrar_ligacao chamado — nenhuma ferramenta pede nova fala ao modelo
+        self.ferramentas: list[dict[str, Any]] = []   # v0.3.6: tempo de cada ferramenta (diagnóstico de pausas)
+
+    def anotar(self, nome: str, t0: float, obs: str = "") -> None:
+        self.ferramentas.append({"f": nome, "em_s": round(t0 - self.inicio, 1), "ms": int((time.monotonic() - t0) * 1000),
+                                 **({"obs": obs} if obs else {})})
 
 
 class Assistente(Agent):
@@ -120,6 +127,8 @@ class Assistente(Agent):
             "p_proximo_passo": proximo_passo, "p_proximo_em": quando, "p_triagem": triagem})
         self.est.registrado = True
         log.info("resultado registrado %s %s", self.est.ligacao_id, r)
+        if self.est.encerrar_pedido:   # v0.3.6: veio junto com o encerrar — sem nova fala depois da despedida
+            raise StopResponse()
         return "Registrado na ficha." + (" A consultora recebeu a tarefa de dar sequência." if (r or {}).get("tarefa_id") else "")
 
     @function_tool
@@ -158,12 +167,17 @@ class Assistente(Agent):
                 quando = dt.datetime.fromisoformat(preferencia).isoformat()
             except ValueError:
                 return "Preferência inválida: use ISO 8601 com fuso, ex.: 2026-10-08T18:00:00-03:00."
-        elif not sem_preferencia:
-            # v0.3.5 (5º teste): sem perguntar, ela lia os 4 primeiros horários da semana — o médico ouvia opções que não queria
+        elif not sem_preferencia and not perguntou_preferencia(self.est.session):
+            # v0.3.5 (5º teste): sem perguntar, ela lia os 4 primeiros horários da semana — o médico ouvia opções que não queria.
+            # v0.3.6 (6º teste): se ela acabou de perguntar dia/horário, a consulta sem preferência é o "tanto faz" — segue direto
+            # (antes custava uma volta a mais no modelo: 14 s de silêncio).
+            self.est.anotar("horarios_livres", time.monotonic(), "barrada: perguntar antes")
             return ("Ainda não consulte. Pergunte ao médico, numa frase, qual dia e horário ficam melhores para ele e consulte com a "
                     "resposta. Só se ele disser que tanto faz, consulte de novo com sem_preferencia=true.")
+        t0 = time.monotonic()
         opc = await banco.rpc("agenda_livres", {"p_tenant": tenant, "p_modalidade": modalidade, "p_preferido": quando,
                                                 "p_qtd": 4 if quando else 40, "p_so_no_dia": so_no_dia}) or []
+        self.est.anotar("horarios_livres", t0, f"pref={preferencia or '-'} opcoes={len(opc)}")
         if not opc:
             return "Não há horário livre nos próximos dias para essa modalidade. Ofereça outra modalidade ou um retorno."
         if not quando:
@@ -182,7 +196,7 @@ class Assistente(Agent):
         aviso = ("" if not quando else
                  "O horário pedido NÃO está livre. Diga isso em meia frase e ofereça as duas opções mais próximas abaixo.\n")
         if not quando:
-            aviso = "Sugira estas opções (dias e turnos diferentes), numa frase, e pergunte qual fica melhor.\n"
+            aviso = "Diga as TRÊS opções abaixo (dias e turnos diferentes), numa frase, e pergunte qual fica melhor.\n"
         return aviso + "Horários livres (fale como no texto; não repita a modalidade; para marcar, passe o inicio):\n" + "\n".join(linhas)
 
     @function_tool
@@ -197,8 +211,10 @@ class Assistente(Agent):
         if not lead:
             return "Este número não tem ficha de lead: não marque; use chamar_humano ou registre 'retornar'."
         tenant = (self.est.contexto.get("ligacao") or {}).get("tenant_id")
+        t0 = time.monotonic()
         r = await banco.rpc("agenda_marcar", {"p_tenant": tenant, "p_lead": lead, "p_modalidade": modalidade,
                                               "p_inicio": inicio, "p_origem": "agente", "p_ligacao_id": self.est.ligacao_id}) or {}
+        self.est.anotar("marcar_reuniao", t0, "ok" if r.get("ok") else "ocupado")
         if not r.get("ok"):
             alt = "; ".join(f"{a['texto']} (inicio={a['inicio']})" for a in (r.get("alternativas") or [])[:3])
             return f"Esse horário acabou de ser ocupado. Ofereça: {alt or 'outro dia'}."
@@ -229,6 +245,7 @@ class Assistente(Agent):
     @function_tool
     async def encerrar_ligacao(self, context: RunContext) -> str:
         """Desliga a ligação. Use logo depois de se despedir (o resultado já deve ter sido registrado)."""
+        self.est.encerrar_pedido = True
         # v0.3.2: no Gemini 3.8 as ferramentas rodam em paralelo; o encerrar podia chegar antes do registrar terminar,
         # voltava "registre antes" e a ligação ficava aberta depois da despedida (3º teste). Agora espera o registro.
         for _ in range(16):
@@ -238,9 +255,24 @@ class Assistente(Agent):
         if not self.est.registrado and self.est.marcado:
             await registrar_automatico(self.est)
         if not self.est.registrado:
+            self.est.encerrar_pedido = False
             return "Antes de encerrar, use registrar_resultado."
         asyncio.create_task(desligar(self.est, "agente encerrou"))
-        return "Ligação será encerrada."
+        # v0.3.6 (6º teste): o texto de retorno fazia o modelo falar de novo depois da despedida — e em inglês
+        # ("I have successfully rescheduled the meeting…"). StopResponse = a ferramenta não pede resposta.
+        raise StopResponse()
+
+
+def perguntou_preferencia(session: Any) -> bool:
+    """A última fala da assistente foi uma pergunta sobre dia/horário? (aí a consulta sem preferência é o 'tanto faz')."""
+    try:
+        for item in reversed(list(session.history.items)):
+            if getattr(item, "type", "") == "message" and item.role == "assistant":
+                t = (item.text_content or "").lower()
+                return "?" in t and any(p in t for p in ("dia", "horário", "horario", "hora"))
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 def frase_confirmacao(r: dict[str, Any], modalidade: str) -> str:
@@ -453,7 +485,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 "p_ligacao_id": ligacao_id, "p_turnos": transcricao(session, est.humano_nome),
                 "p_custo_usd": round(dur_min * (PRECO_ENTRADA_MIN + PRECO_SAIDA_MIN), 4),
                 "p_meta": {"versao": VERSAO, "roteiro": instrucoes.VERSAO_ROTEIRO, "modelo": MODELO, "voz": VOZ,
-                           "minutos_agente": round(dur_min, 2), "uso": uso, "saida": motivo,
+                           "minutos_agente": round(dur_min, 2), "uso": uso, "saida": motivo, "ferramentas": est.ferramentas[-40:],
                            "custo": "estimado pelo tempo do agente na ligação"}})
             if not est.registrado and not est.humano_nome:
                 await banco.rpc("ligacao_registrar", {

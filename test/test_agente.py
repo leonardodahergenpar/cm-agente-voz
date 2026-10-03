@@ -80,8 +80,13 @@ def test_ferramentas(monkeypatch):
         assert "Pedido feito" in r and any(c[0] == "ligacao_pedir_humano" for c in chamadas)
         await asyncio.sleep(0.4)
         assert ("upd", {"status": "em_andamento"}) in chamadas
-        # encerrar depois de registrar
-        r = await ag.encerrar_ligacao(None)
+        # encerrar depois de registrar: desliga e não pede nova fala ao modelo
+        from livekit.agents.llm import StopResponse
+        try:
+            await ag.encerrar_ligacao(None)
+            assert False
+        except StopResponse:
+            pass
         await asyncio.sleep(1.2)
         assert est.ctx.desligou and est.ctx.motivo == "agente encerrou"
     asyncio.run(corre())
@@ -143,7 +148,7 @@ def test_ferramentas_de_agenda(monkeypatch):
         r = await ag.horarios_livres(None, "video")            # sem perguntar ao médico: não consulta
         assert "Ainda não consulte" in r and len(chamadas) == n
         r = await ag.horarios_livres(None, "video", sem_preferencia=True)
-        assert "Sugira estas opções" in r and chamadas[-1][1]["p_qtd"] == 40
+        assert "TRÊS opções" in r and chamadas[-1][1]["p_qtd"] == 40
         r = await ag.marcar_reuniao(None, "video", "2026-10-08T20:30:00+00:00")
         assert "Fechado: quinta-feira, 8 de outubro, às 17h30, por vídeo, com a Priscila" in r and "UMA vez" in r and est.marcado
         assert "mudou" not in r
@@ -163,8 +168,13 @@ def test_encerrar_espera_registro_e_registra_sozinho(monkeypatch):
         est.marcado = {"ok": True, "modalidade": "video", "texto": "sexta-feira, 9 de outubro, às 18h", "consultora": "Priscila",
                        "inicio": "2026-10-09T21:00:00+00:00"}
         ag = agente.Assistente(est)
-        r = await ag.encerrar_ligacao(None)          # sem registro: registra 'agendou' sozinho e encerra
-        assert "encerrada" in r and est.registrado
+        from livekit.agents.llm import StopResponse
+        try:                                        # sem registro: registra 'agendou' sozinho e encerra, sem pedir nova fala
+            await ag.encerrar_ligacao(None)
+            assert False, "devia pedir silêncio"
+        except StopResponse:
+            pass
+        assert est.registrado and est.encerrar_pedido
         assert [c for c in chamadas if c[0] == "ligacao_registrar"][-1][1]["p_resultado"] == "agendou"
         await asyncio.sleep(1.2)
         assert est.ctx.desligou
@@ -221,4 +231,23 @@ def test_troca_de_consultora_e_espera_do_silencio(monkeypatch):
         asyncio.create_task(para_de_falar())
         await agente.esperar_silencio(sess, quieto_s=0.3, maximo_s=3)
         assert fala.ok and asyncio.get_event_loop().time() - t0 >= 0.6
+    asyncio.run(corre())
+
+
+def test_tanto_faz_logo_depois_da_pergunta(monkeypatch):
+    chamadas = []
+    async def rpc(nome, args):
+        chamadas.append((nome, args))
+        return [{"inicio": "2026-10-05T11:00:00+00:00", "texto": "segunda-feira, 5 de outubro, às 8h"}]
+    monkeypatch.setattr(banco, "rpc", rpc)
+    Item = lambda role, txt: types.SimpleNamespace(type="message", role=role, text_content=txt)
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), CTX)
+        est.session = types.SimpleNamespace(history=types.SimpleNamespace(items=[
+            Item("assistant", "Você prefere no mesmo dia, em outro horário, ou em outro dia?"), Item("user", "Tanto faz.")]))
+        r = await agente.Assistente(est).horarios_livres(None, "cafe")
+        assert "TRÊS opções" in r and chamadas and est.ferramentas[-1]["f"] == "horarios_livres"
+        est.session.history.items = [Item("assistant", "Como posso ajudar, Doutor?"), Item("user", "Quero remarcar.")]
+        assert "Ainda não consulte" in await agente.Assistente(est).horarios_livres(None, "cafe")
     asyncio.run(corre())
