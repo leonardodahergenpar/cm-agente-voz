@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.0"
+VERSAO = "0.3.1"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -244,7 +244,10 @@ async def desligar(est: Estado, motivo: str) -> None:
 async def iniciar_gravacao(est: Estado) -> None:
     """Grava o áudio da sala no Storage do Supabase (S3), se configurado."""
     chave, segredo, ponto = os.environ.get("S3_ACCESS_KEY"), os.environ.get("S3_SECRET_KEY"), os.environ.get("S3_ENDPOINT")
-    if not (chave and segredo and ponto) or "COLE_AQUI" in (chave, segredo, os.environ.get("S3_REGION", "")):
+    faltam = [n for n, v in (("S3_ENDPOINT", ponto), ("S3_ACCESS_KEY", chave), ("S3_SECRET_KEY", segredo),
+                             ("S3_REGION", os.environ.get("S3_REGION"))) if not v or v == "COLE_AQUI"]
+    if faltam:   # v0.3.1: deixa o motivo na ligação (nos dois primeiros testes a gravação não ligou e não havia rastro)
+        await banco.atualizar_ligacao(est.ligacao_id, {"erro": {"gravacao": f"desligada: faltam {', '.join(faltam)}"}})
         return
     t = dt.datetime.now(dt.timezone(dt.timedelta(hours=-3)))
     caminho = f"{est.contexto['ligacao']['tenant_id']}/{t:%Y}/{t:%m}/{est.ligacao_id}.ogg"
