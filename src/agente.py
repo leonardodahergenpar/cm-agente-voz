@@ -34,7 +34,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.1"
+VERSAO = "0.3.2"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -192,11 +192,33 @@ class Assistente(Agent):
 
     @function_tool
     async def encerrar_ligacao(self, context: RunContext) -> str:
-        """Desliga a ligação. Use só depois de registrar o resultado e de se despedir."""
+        """Desliga a ligação. Use logo depois de se despedir (o resultado já deve ter sido registrado)."""
+        # v0.3.2: no Gemini 3.8 as ferramentas rodam em paralelo; o encerrar podia chegar antes do registrar terminar,
+        # voltava "registre antes" e a ligação ficava aberta depois da despedida (3º teste). Agora espera o registro.
+        for _ in range(16):
+            if self.est.registrado:
+                break
+            await asyncio.sleep(0.5)
+        if not self.est.registrado and self.est.marcado:
+            await registrar_automatico(self.est)
         if not self.est.registrado:
             return "Antes de encerrar, use registrar_resultado."
         asyncio.create_task(desligar(self.est, "agente encerrou"))
         return "Ligação será encerrada."
+
+
+async def registrar_automatico(est: "Estado") -> None:
+    """Reunião marcada mas o modelo não registrou: registra 'agendou' com o que a agenda devolveu."""
+    m = est.marcado or {}
+    try:
+        await banco.rpc("ligacao_registrar", {
+            "p_ligacao_id": est.ligacao_id, "p_resultado": "agendou",
+            "p_resumo": f"Reunião marcada pela assistente: {m.get('modalidade', '')} {m.get('texto', '')} com {m.get('consultora', '')}.",
+            "p_proximo_passo": {"cafe": "café no escritório", "video": "vídeo com a consultora", "retorno": "retorno por ligação"}.get(m.get("modalidade", ""), "reunião"),
+            "p_proximo_em": m.get("inicio")})
+        est.registrado = True
+    except Exception as e:  # noqa: BLE001
+        log.error("registro automático falhou: %s", e)
 
 
 AVISO = "[SISTEMA]"
@@ -364,7 +386,9 @@ async def entrypoint(ctx: JobContext) -> None:
         if getattr(ev, "new_state", "") != "away" or est.humano_entrou.is_set() or est.encerrando or est.aguardando:
             return
         ausencias["n"] += 1
-        if ausencias["n"] == 1:
+        if est.registrado:   # já se despediu e registrou: silêncio depois disso é fim de ligação
+            asyncio.create_task(desligar(est, "silêncio depois da despedida"))
+        elif ausencias["n"] == 1:
             instruir(session, "O médico está em silêncio há uns 20 segundos. Pergunte, numa frase curta e em português, se ele ainda está na linha.")
         else:
             asyncio.create_task(desligar(est, "médico em silêncio"))

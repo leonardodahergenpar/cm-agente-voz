@@ -139,3 +139,21 @@ def test_ferramentas_de_agenda(monkeypatch):
         est2 = agente.Estado("L2", FakeCtx(), {**ctx, "lead": None})
         assert "não tem ficha" in await agente.Assistente(est2).marcar_reuniao(None, "video", "x")
     asyncio.run(corre())
+
+
+def test_encerrar_espera_registro_e_registra_sozinho(monkeypatch):
+    chamadas = []
+    async def rpc(nome, args): chamadas.append((nome, args)); return {"ok": True}
+    monkeypatch.setattr(banco, "rpc", rpc)
+
+    async def corre():
+        est = agente.Estado("L1", FakeCtx(), CTX)
+        est.marcado = {"ok": True, "modalidade": "video", "texto": "sexta-feira, 9 de outubro, às 18h", "consultora": "Priscila",
+                       "inicio": "2026-10-09T21:00:00+00:00"}
+        ag = agente.Assistente(est)
+        r = await ag.encerrar_ligacao(None)          # sem registro: registra 'agendou' sozinho e encerra
+        assert "encerrada" in r and est.registrado
+        assert [c for c in chamadas if c[0] == "ligacao_registrar"][-1][1]["p_resultado"] == "agendou"
+        await asyncio.sleep(1.2)
+        assert est.ctx.desligou
+    asyncio.run(corre())
