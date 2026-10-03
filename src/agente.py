@@ -35,7 +35,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.7"
+VERSAO = "0.3.8"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -56,7 +56,7 @@ SILENCIO_MS = int(os.environ.get("VOZ_SILENCIO_MS", "500"))   # pausa do médico
 INICIO_SENS = os.environ.get("VOZ_INICIO_SENS", "LOW").upper()
 PREFIXO_MS = int(os.environ.get("VOZ_PREFIXO_MS", "300"))
 RETOMAR_S = float(os.environ.get("VOZ_RETOMAR_S", "2.5"))   # interrompida sem o médico dizer nada: retoma a frase
-VOCABULARIO = ["Conta Medical", "Onsaúde", "Quadra Corporate", "Doca", "CNPJ", "Priscila", "Emilly", "Eduarda", "Belém",
+VOCABULARIO = [instrucoes.NOME, "Conta Medical", "Onsaúde", "Quadra Corporate", "Doca", "CNPJ", "Priscila", "Emilly", "Eduarda", "Belém",
                "sociedade médica", "remarcar", "presencial"]
 Resultado = Literal["interessado", "agendou", "sem_interesse", "retornar", "duvida_humano", "nao_e_lead"]
 Caminho = Literal["compartilhada", "individual", "migracao", "indefinido"]

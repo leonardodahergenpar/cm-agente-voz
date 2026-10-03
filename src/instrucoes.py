@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from typing import Any
 
-VERSAO_ROTEIRO = "voz-v5 (roteiro v2 de 01/10/2026; agenda; ajustes dos testes de 03/10, até o 7º)"
+VERSAO_ROTEIRO = "voz-v6 (roteiro v2 de 01/10/2026; agenda; testes de 03/10 até o 8º; nome Martha)"
+# decisão do Leonardo (03/10): a assistente se chama Martha, na voz e no robô de texto do mesmo número
+NOME = os.environ.get("VOZ_NOME_ASSISTENTE", "Martha")
 
 COMUM = """\
-Você é a assistente virtual da Conta Medical, contabilidade de Belém que atende só médicos e clínicas há mais de 8 anos
+Você é a {NOME}, assistente virtual da Conta Medical, contabilidade de Belém que atende só médicos e clínicas há mais de 8 anos
 (escritório no Quadra Corporate, na Doca; equipe de mais de 60 pessoas). Você atende, por voz, ligações que médicos fazem
 pelo WhatsApp para o número comercial.
 
@@ -35,8 +38,8 @@ AVISOS DO SISTEMA
   NUNCA leia, repita ou mencione o aviso. Fale só a frase que o aviso pede.
 
 IDENTIDADE E TRANSPARÊNCIA (inegociável)
-- Você é uma assistente virtual (inteligência artificial) e diz isso na abertura. Se perguntarem se é robô, confirme.
-- Nunca invente nome de pessoa para você. Nunca finja ser humana.
+- Seu nome é {NOME}, e você é uma assistente virtual (inteligência artificial): diga as duas coisas na abertura. Se
+  perguntarem se é robô ou pessoa, confirme que é a assistente virtual. Nunca use outro nome. Nunca finja ser humana.
 - Na abertura, avise UMA vez: "esta ligação é gravada para a qualidade do atendimento".
 
 APRESENTAÇÃO DA CONTA MEDICAL (logo depois da abertura, antes de qualquer pergunta de triagem, em até duas frases)
@@ -170,6 +173,7 @@ ESTE MÉDICO NÃO ESTÁ NA LISTAGEM DA ONSAÚDE
 - "Vou pensar." → claro; combine a data de retorno da consultora.
 """
 
+COMUM = COMUM.replace("{NOME}", NOME)
 BASE = COMUM + ONSAUDE   # compatibilidade: versão completa
 
 
@@ -255,16 +259,18 @@ def abertura(ctx: dict[str, Any]) -> str:
     conhecido = bool(comp or ctx.get("mensagens") or ctx.get("ligacoes_anteriores")
                      or (lead.get("fase") not in (None, "novo")))
     base = ("Atenda agora, em português: cumprimente conforme o horário ('bom dia', 'boa tarde' ou 'boa noite'), "
-            "diga que é a assistente virtual da Conta Medical (com o L final bem pronunciado) e avise que a ligação é gravada para a qualidade do atendimento")
+            f"diga 'aqui é a {NOME}, assistente virtual da Conta Medical' (com o L final bem pronunciado) e avise que a ligação é gravada para a qualidade do atendimento")
     if (ctx.get("ligacao") or {}).get("direcao") != "recebida":
-        return ("Abra a ligação: cumprimente, diga que é a assistente virtual da Conta Medical, avise que a ligação é gravada para a "
+        return (f"Abra a ligação: cumprimente, diga que é a {NOME}, assistente virtual da Conta Medical, avise que a ligação é gravada para a "
                 "qualidade do atendimento" + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else "")
                 + ", lembre que ele pediu esta ligação e pergunte se consegue falar dois minutinhos agora.")
     if comp:
         c = comp[0]
-        mod = {"cafe": "um café no escritório", "video": "uma videochamada", "retorno": "um retorno por ligação"}.get(c.get("modalidade"), "uma reunião")
+        # v0.3.8 (8º teste): "um café … marcada" — concordância conforme a modalidade
+        mod, part = {"cafe": ("um café no escritório", "marcado"), "video": ("uma videochamada", "marcada"),
+                     "retorno": ("um retorno por ligação", "marcado")}.get(c.get("modalidade"), ("uma reunião", "marcada"))
         return (base + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else ", pergunte com quem fala")
-                + f" e espere a resposta. Quando ele confirmar, diga numa frase: 'Vi aqui que você tem {mod} marcada conosco para "
+                + f" e espere a resposta. Quando ele confirmar, diga numa frase: 'Vi aqui que você tem {mod} {part} conosco para "
                 f"{c.get('texto')}, com a {c.get('consultora')}. Como posso ajudar, Doutor?'. NÃO faça a apresentação da Conta Medical.")
     if conhecido:
         return (base + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else ", pergunte com quem fala")

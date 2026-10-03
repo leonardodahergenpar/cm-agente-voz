@@ -44,6 +44,9 @@ def test_abertura():
     comp = [{"modalidade": "video", "texto": "sexta-feira, 9 de outubro, às 18h", "consultora": "Priscila"}]
     r = instrucoes.abertura({**CTX, "compromissos": comp})
     assert "videochamada marcada conosco para sexta-feira, 9 de outubro, às 18h, com a Priscila" in r and "NÃO faça a apresentação" in r
+    cafe = instrucoes.abertura({**CTX, "compromissos": [{**comp[0], "modalidade": "cafe"}]})
+    assert "um café no escritório marcado conosco" in cafe and "marcada conosco" not in cafe
+    assert "aqui é a Martha, assistente virtual da Conta Medical" in a
 
 class FakeCtx:  # JobContext mínimo
     def __init__(self): self.room = types.SimpleNamespace(name="lig-L1"); self.desligou = False; self.motivo = None
@@ -278,3 +281,9 @@ def test_nome_da_empresa_e_retomada_de_fala_cortada(monkeypatch):
         await asyncio.sleep(0.15)
         assert len(pedidos) == 1
     asyncio.run(corre())
+
+
+def test_nome_martha():
+    s = instrucoes.montar(CTX)
+    assert s.startswith("Você é a Martha, assistente virtual da Conta Medical") and "Seu nome é Martha" in s and "{NOME}" not in s
+    assert "Martha" in agente.VOCABULARIO
