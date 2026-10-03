@@ -1,5 +1,5 @@
 """Testes sem rede: instruções, ferramentas (banco simulado) e transcrição. Rodar: python -m pytest -q test/"""
-import asyncio, datetime as dt, json, os, sys, types
+import asyncio, os, sys, types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("SUPABASE_URL", "https://x.supabase.co"); os.environ.setdefault("SUPABASE_SERVICE_KEY", "k")
 import banco, instrucoes, agente  # noqa: E402
@@ -13,9 +13,17 @@ CTX = {
     "faq": [{"slug": "mei", "pergunta": "Posso ser MEI?", "resposta": "Não, Doutor(a)."}],
 }
 
+def test_instrucoes_onsaude_tem_valores_e_os_demais_nao():
+    s = instrucoes.montar({**CTX, "onsaude": True})
+    assert "quatrocentos reais" in s and "oitocentos e dez reais" in s and "LISTAGEM DA ONSAÚDE (mudança" in s
+    g = instrucoes.montar({**CTX, "onsaude": False})
+    assert "quatrocentos" not in g and "oitocentos" not in g and "NÃO fale de valores" in g
+    for x in (s, g):
+        assert "português do Brasil, do começo ao fim" in x and "[SISTEMA]" in x and "APRESENTAÇÃO DA CONTA MEDICAL" in x
+
 def test_instrucoes_tem_regras_e_contexto():
     s = instrucoes.montar(CTX)
-    for trecho in ("assistente virtual", "gravada", "R$ 400", "R$ 810", "Nenhum percentual", "Leonardo Daher", "Belém/PA",
+    for trecho in ("assistente virtual", "gravada", "Nenhum percentual", "Leonardo Daher", "Belém/PA",
                    "[mei]", "MEI pra emitir", "Eduarda, Emilly, Priscila", "registrar_resultado", "encerrar_ligacao"):
         assert trecho in s, trecho
     assert "número é interno" not in s          # tem lead: trata como lead
@@ -30,6 +38,7 @@ def test_abertura():
     a = instrucoes.abertura(CTX)
     assert "Doutor(a) Leonardo" in a and "gravada" in a and "assistente virtual" in a
     assert "pergunte com quem fala" in instrucoes.abertura({**CTX, "lead": {"nome": "5591999990000"}})
+    assert "apresente a Conta Medical" in a and "espere a resposta" in a
 
 class FakeCtx:  # JobContext mínimo
     def __init__(self): self.room = types.SimpleNamespace(name="lig-L1"); self.desligou = False; self.motivo = None
@@ -77,6 +86,7 @@ def test_transcricao():
     h = llm.ChatContext()
     h.add_message(role="system", content="x"); h.add_message(role="assistant", content="Boa tarde, Conta Medical")
     h.add_message(role="user", content="Quero saber o preço"); h.add_message(role="user", content="   ")
+    h.add_message(role="user", content="[SISTEMA] (aviso interno) O médico está em silêncio.")
     s = types.SimpleNamespace(history=h)
     t = agente.transcricao(s, "Eduarda")
     assert [x["quem"] for x in t] == ["agente", "medico", "sistema"] and "Eduarda" in t[-1]["texto"]
@@ -87,3 +97,10 @@ def test_cabecalho_chave_nova_e_antiga(monkeypatch):
     assert h["apikey"] == "sb_secret_abc" and "Authorization" not in h and h["Content-Profile"] == "crm"
     monkeypatch.setattr(banco, "CHAVE", "eyJhbGciOi.x.y")
     assert banco._cab()["Authorization"] == "Bearer eyJhbGciOi.x.y"
+
+
+def test_instruir_vai_como_aviso_do_sistema():
+    class S:
+        def generate_reply(self, **kw): self.kw = kw; return "h"
+    s = S(); agente.instruir(s, "Pergunte se ele ainda está na linha.")
+    assert "instructions" not in s.kw and s.kw["user_input"].startswith("[SISTEMA]") and "não leia" in s.kw["user_input"]

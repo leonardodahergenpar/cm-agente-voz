@@ -26,10 +26,15 @@ from livekit import api, rtc
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, cli, function_tool, room_io
 from livekit.plugins import google
 
+try:  # supressão de ruído da LiveKit Cloud (modelo para áudio de telefone); sem ela, segue sem filtro
+    from livekit.plugins import noise_cancellation
+except Exception:  # noqa: BLE001
+    noise_cancellation = None
+
 import banco
 import instrucoes
 
-VERSAO = "0.1.0"
+VERSAO = "0.2.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -60,6 +65,7 @@ class Estado:
         self.session: AgentSession | None = None
         self.inicio = time.monotonic()
         self.encerrando = False
+        self.aguardando = False   # esperando a consultora entrar (não pergunta "ainda está na linha?" nesse tempo)
 
 
 class Assistente(Agent):
@@ -122,6 +128,7 @@ class Assistente(Agent):
             return "A consultora já está na ligação."
         await banco.rpc("ligacao_pedir_humano", {"p_ligacao_id": self.est.ligacao_id, "p_motivo": motivo})
         if not self.est.espera or self.est.espera.done():
+            self.est.aguardando = True
             self.est.espera = asyncio.create_task(esperar_humano(self.est))
         return (f"Pedido feito. Diga ao médico que vai chamar uma consultora e peça um instante, sem prometer tempo. "
                 f"Enquanto ninguém entra, continue ajudando no que puder. Se em {ESPERA_HUMANO_S} segundos ninguém entrar, eu aviso.")
@@ -135,16 +142,28 @@ class Assistente(Agent):
         return "Ligação será encerrada."
 
 
+AVISO = "[SISTEMA]"
+
+
+def instruir(session: AgentSession, texto: str):
+    """Pede uma fala ao modelo sem que ele leia a instrução em voz alta.
+
+    v0.2: generate_reply(instructions=...) manda o texto como turno do PRÓPRIO modelo; o Gemini 3.8 Live continuava
+    a frase e lia a instrução para o médico (teste de 03/10). Agora vai como aviso do sistema num turno de usuário,
+    marcado com [SISTEMA] — as instruções dizem que esses avisos nunca são lidos, e a transcrição os descarta.
+    """
+    return session.generate_reply(user_input=f"{AVISO} (aviso interno da plataforma, não é fala do médico; não leia nem mencione) {texto}")
+
+
 async def esperar_humano(est: Estado) -> None:
     try:
         await asyncio.wait_for(est.humano_entrou.wait(), timeout=ESPERA_HUMANO_S)
     except asyncio.TimeoutError:
         await banco.atualizar_ligacao(est.ligacao_id, {"status": "em_andamento"})
+        est.aguardando = False
         if est.session and not est.encerrando:
-            est.session.generate_reply(instructions=(
-                "Nenhuma consultora conseguiu entrar agora. Diga isso com naturalidade, peça desculpas pela espera, "
-                "combine que a consultora retorna (pergunte o melhor horário), registre com resultado 'retornar' "
-                "e siga normalmente."))
+            instruir(est.session, "Nenhuma consultora conseguiu entrar agora. Em português, diga isso com naturalidade, peça "
+                                  "desculpas pela espera e pergunte o melhor dia e horário para a consultora retornar.")
 
 
 async def desligar(est: Estado, motivo: str) -> None:
@@ -195,7 +214,7 @@ def transcricao(session: AgentSession | None, humano: str | None) -> list[dict[s
         if getattr(item, "type", "") != "message" or item.role not in ("user", "assistant"):
             continue
         texto = (item.text_content or "").strip()
-        if not texto:
+        if not texto or texto.startswith(AVISO):
             continue
         turnos.append({"quem": "medico" if item.role == "user" else "agente", "texto": texto,
                        "em": dt.datetime.fromtimestamp(item.created_at, dt.timezone.utc).isoformat()})
@@ -263,11 +282,14 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(
         room=ctx.room, agent=Assistente(est), record=False,   # nada fica gravado no LiveKit Cloud
-        room_options=room_io.RoomOptions(participant_identity=medico.identity,
-                                         participant_kinds=[rtc.ParticipantKind.PARTICIPANT_KIND_CONNECTOR]),
+        room_options=room_io.RoomOptions(
+            participant_identity=medico.identity,
+            participant_kinds=[rtc.ParticipantKind.PARTICIPANT_KIND_CONNECTOR],
+            audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())
+            if noise_cancellation and os.environ.get("VOZ_FILTRO_RUIDO", "1") == "1" else True),
     )
     await banco.atualizar_ligacao(ligacao_id, {"status": "em_andamento", "atendida_em": agora_iso()})
-    fala = session.generate_reply(instructions=instrucoes.abertura(contexto))
+    fala = instruir(session, instrucoes.abertura(contexto))
     await fala
     await banco.atualizar_ligacao(ligacao_id, {"aviso_gravacao_em": agora_iso()})
     await iniciar_gravacao(est)
@@ -276,11 +298,11 @@ async def entrypoint(ctx: JobContext) -> None:
     ausencias = {"n": 0}
 
     def ao_mudar_usuario(ev) -> None:  # noqa: ANN001
-        if getattr(ev, "new_state", "") != "away" or est.humano_entrou.is_set() or est.encerrando:
+        if getattr(ev, "new_state", "") != "away" or est.humano_entrou.is_set() or est.encerrando or est.aguardando:
             return
         ausencias["n"] += 1
         if ausencias["n"] == 1:
-            session.generate_reply(instructions="O médico ficou em silêncio. Pergunte com gentileza se ele ainda está na linha.")
+            instruir(session, "O médico está em silêncio há uns 20 segundos. Pergunte, numa frase curta e em português, se ele ainda está na linha.")
         else:
             asyncio.create_task(desligar(est, "médico em silêncio"))
 
@@ -290,7 +312,7 @@ async def entrypoint(ctx: JobContext) -> None:
     async def relogio() -> None:
         await asyncio.sleep(max(60.0, (MAX_MIN - 2) * 60))
         if not est.encerrando and not est.humano_entrou.is_set():
-            session.generate_reply(instructions="A ligação está longa. Proponha o próximo passo, registre o resultado e despeça-se em até um minuto.")
+            instruir(session, "A ligação está longa. Proponha o próximo passo, registre o resultado e despeça-se em até um minuto.")
         await asyncio.sleep(120)
         if not est.encerrando and not est.humano_entrou.is_set():
             await desligar(est, "tempo máximo")
@@ -300,6 +322,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
 async def passar_para_humano(est: Estado) -> None:
     """A consultora entrou pela plataforma: o agente se despede e sai; a ligação continua entre os dois."""
+    est.aguardando = False
     if est.espera and not est.espera.done():
         est.espera.cancel()
     s = est.session
@@ -308,8 +331,8 @@ async def passar_para_humano(est: Estado) -> None:
     try:
         s.interrupt()
         # o Gemini Live não tem say(): pede a frase ao modelo
-        h = s.generate_reply(instructions=f"Diga apenas, numa frase curta: 'Pronto, a {est.humano_nome} entrou na ligação. "
-                                          f"Vou deixar vocês conversarem.' Não diga mais nada.")
+        h = instruir(s, f"A consultora {est.humano_nome} acabou de entrar na ligação. Diga só, numa frase curta: "
+                        f"'Pronto, a {est.humano_nome} entrou na ligação. Vou deixar vocês conversarem.' Não diga mais nada.")
         await asyncio.wait_for(h.wait_for_playout(), timeout=10)
     except Exception as e:  # noqa: BLE001
         log.warning("despedida na passagem: %s", e)
