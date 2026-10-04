@@ -201,9 +201,14 @@ def test_reuniao_ja_marcada_remarcar_e_cancelar(monkeypatch):
 
 
 def test_confirmacao_e_espalhar():
-    r = {"texto": "quarta-feira, 7 de outubro, às 17h30", "consultora": "Emilly", "endereco": "Quadra Corporate, na Doca"}
+    r = {"texto": "quarta-feira, 7 de outubro, às 17h30", "consultora": "Emilly", "endereco": "Ed. Quadra Corporate, 17º andar, na Doca"}
     f = agente.frase_confirmacao(r, "cafe")
-    assert f == "Fechado: quarta-feira, 7 de outubro, às 17h30, aqui no nosso escritório, no Quadra Corporate, na Doca, com a Emilly."
+    assert f == ("Fechado: quarta-feira, 7 de outubro, às 17h30, aqui no nosso escritório, no edifício Quadra Corporate, "
+                 "décimo sétimo andar, na Doca, com a Emilly.")
+    assert agente.endereco_falado("Ed. Torre X, 3° andar") == "edifício Torre X, terceiro andar"
+    assert agente.endereco_falado("sala 1203, 12º andar") == "sala 1203, décimo segundo andar"
+    assert agente.endereco_falado("Quadra Corporate, na Doca") == "Quadra Corporate, na Doca"
+    assert "Ed." not in agente.frase_confirmacao({"texto": "x", "consultora": "Emilly"}, "cafe")
     assert "café" not in f and " por " not in f
     opc = [{"inicio": f"2026-10-05T{h:02d}:{m:02d}:00+00:00"} for h in range(11, 22) for m in (0, 30)]       # segunda 8h–18h30
     opc += [{"inicio": f"2026-10-06T{h:02d}:00:00+00:00"} for h in range(11, 22)]                            # terça

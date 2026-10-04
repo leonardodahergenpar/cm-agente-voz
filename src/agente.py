@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import re
 import json
 import logging
 import os
@@ -35,7 +36,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.8"
+VERSAO = "0.3.9"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -281,12 +282,28 @@ def perguntou_preferencia(session: Any) -> bool:
     return False
 
 
+_UNID = ["", "primeiro", "segundo", "terceiro", "quarto", "quinto", "sexto", "sétimo", "oitavo", "nono"]
+_DEZ = ["", "décimo", "vigésimo", "trigésimo"]
+
+
+def endereco_falado(endereco: str) -> str:
+    """v0.3.9: o endereço vem do banco escrito para ler ("Ed. Quadra Corporate, 17º andar, na Doca");
+    na voz, "Ed." e "17º" viram "edifício" e "décimo sétimo" (a síntese pode soletrar abreviação e ordinal)."""
+    def ordinal(m: re.Match[str]) -> str:
+        n = int(m.group(1))
+        if not 1 <= n <= 39:
+            return m.group(0)
+        return " ".join(x for x in (_DEZ[n // 10], _UNID[n % 10]) if x)
+    t = re.sub(r"\bEd\.\s*", "edifício ", endereco)
+    return re.sub(r"\b(\d{1,2})\s?[º°]", ordinal, t)
+
+
 def frase_confirmacao(r: dict[str, Any], modalidade: str) -> str:
     """Frase única de confirmação. v0.3.5: "café" aparece só ao oferecer; marcado, vira reunião aqui no escritório
     (no 5º teste ela repetiu "café no escritório" três vezes e disse "por café no escritório")."""
     texto, quem = r.get("texto", ""), r.get("consultora", "a consultora")
     if modalidade == "cafe":
-        local = r.get("endereco") or "Quadra Corporate, na Doca"
+        local = endereco_falado(r.get("endereco") or "Ed. Quadra Corporate, 17º andar, na Doca")
         return f"Fechado: {texto}, aqui no nosso escritório, no {local}, com a {quem}."
     if modalidade == "video":
         return f"Fechado: {texto}, por vídeo, com a {quem}. O link chega pelo WhatsApp."
